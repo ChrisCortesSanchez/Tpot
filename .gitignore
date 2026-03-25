@@ -3,4 +3,5 @@ __pycache__/
 *.pyc
 reports/*.html
 reports/*.json
-!reports/sample_report.htmldata/
+!reports/sample_report.html
+/data
