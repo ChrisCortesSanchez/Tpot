@@ -1,27 +1,33 @@
 """
 parser.py — Normalize raw T-Pot honeypot logs into a unified event schema.
 
-Each honeypot service (Cowrie, Dionaea, Honeytrap) writes logs in its own format.
-This module reads those JSON exports and normalizes every event into a shared
-structure so the rest of the pipeline can treat them uniformly.
+Updated for real T-Pot Elasticsearch exports where:
+  - Field is 'dest_port' not 'dst_port'
+  - Geo data is already embedded in a 'geoip' block (T-Pot pre-enriches)
+  - Honeytrap HTTP request data is hex-encoded in attack_connection.payload.data_hex
+  - Dionaea connection type lives in connection.protocol
+
+Because T-Pot already includes geo enrichment, the enricher.py step is
+bypassed — geo is extracted directly from the 'geoip' block in each event.
 
 Unified event schema:
     {
-        "timestamp":  str  — ISO8601
-        "service":    str  — "cowrie" | "dionaea" | "honeytrap"
-        "src_ip":     str
-        "src_port":   int | None
-        "dst_port":   int | None
-        "event_type": str  — normalized label (see constants below)
-        "username":   str | None
-        "password":   str | None
-        "command":    str | None
-        "uri":        str | None
-        "method":     str | None
-        "user_agent": str | None
-        "exploit":    str | None
+        "timestamp":    str  — ISO8601
+        "service":      str  — "cowrie" | "dionaea" | "honeytrap"
+        "src_ip":       str
+        "src_port":     int | None
+        "dst_port":     int | None
+        "event_type":   str  — normalized label
+        "username":     str | None
+        "password":     str | None
+        "command":      str | None
+        "uri":          str | None
+        "method":       str | None
+        "user_agent":   str | None
+        "exploit":      str | None
         "payload_hash": str | None
-        "raw":        dict — original event for reference
+        "geo":          dict — pre-populated from T-Pot's geoip block
+        "raw":          dict — original event for reference
     }
 """
 
@@ -32,24 +38,88 @@ from typing import Generator
 
 logger = logging.getLogger(__name__)
 
-# ── Cowrie event_id → normalized label ────────────────────────────────────────
+# ── Cowrie eventid → normalized label ─────────────────────────────────────────
 COWRIE_EVENT_MAP = {
-    "cowrie.session.connect":   "connection",
-    "cowrie.login.failed":      "login_failed",
-    "cowrie.login.success":     "login_success",
-    "cowrie.command.input":     "command_exec",
-    "cowrie.session.closed":    "session_closed",
+    "cowrie.session.connect":       "connection",
+    "cowrie.login.failed":          "login_failed",
+    "cowrie.login.success":         "login_success",
+    "cowrie.command.input":         "command_exec",
+    "cowrie.session.closed":        "session_closed",
     "cowrie.session.file_download": "file_download",
     "cowrie.direct-tcpip.request":  "tcp_forward",
 }
 
 
+def _extract_geo(raw: dict) -> dict:
+    """
+    Extract geo/ASN fields from T-Pot's embedded 'geoip' block.
+    This replaces the ip-api.com enrichment step entirely since
+    T-Pot already enriches every event at ingest time.
+    """
+    g = raw.get("geoip") or {}
+    asn = g.get("asn")
+    as_org = g.get("as_org")
+    asn_str = f"AS{asn}" if asn else None
+
+    return {
+        "country":      g.get("country_name"),
+        "country_code": g.get("country_code2"),
+        "region":       g.get("region_name"),
+        "city":         g.get("city_name"),
+        "isp":          as_org,
+        "org":          f"{asn_str} {as_org}" if asn_str and as_org else as_org,
+        "asn":          asn_str,
+        "lat":          g.get("latitude"),
+        "lon":          g.get("longitude"),
+        "enriched":     bool(g),
+    }
+
+
+def _decode_honeytrap_payload(raw: dict) -> tuple[str | None, str | None, str | None]:
+    """
+    Honeytrap stores the raw HTTP request as hex in:
+        attack_connection.payload.data_hex
+
+    Decode it and parse out method, URI, and User-Agent.
+    Returns (method, uri, user_agent) — any may be None.
+    """
+    try:
+        attack = raw.get("attack_connection") or {}
+        payload = attack.get("payload") or {}
+        hex_data = payload.get("data_hex", "")
+        if not hex_data:
+            return None, None, None
+
+        decoded = bytes.fromhex(hex_data).decode("utf-8", errors="replace")
+        lines = decoded.split("\r\n")
+
+        method, uri, user_agent = None, None, None
+
+        # First line: "METHOD /path HTTP/x.x"
+        if lines:
+            parts = lines[0].split(" ")
+            if len(parts) >= 2:
+                method = parts[0]
+                uri = parts[1]
+
+        # Remaining lines are headers
+        for line in lines[1:]:
+            if line.lower().startswith("user-agent:"):
+                user_agent = line.split(":", 1)[1].strip()
+                break
+
+        return method, uri, user_agent
+
+    except Exception:
+        return None, None, None
+
+
 def _parse_cowrie(raw: dict) -> dict | None:
-    """Parse a single Cowrie JSON event into the unified schema."""
+    """Parse a real T-Pot Cowrie event into the unified schema."""
     event_id = raw.get("eventid", "")
     event_type = COWRIE_EVENT_MAP.get(event_id, event_id)
 
-    # Skip pure bookkeeping events that add no analytical value
+    # Skip pure bookkeeping events
     if event_type == "session_closed":
         return None
 
@@ -58,29 +128,44 @@ def _parse_cowrie(raw: dict) -> dict | None:
         "service":      "cowrie",
         "src_ip":       raw.get("src_ip"),
         "src_port":     raw.get("src_port"),
-        "dst_port":     raw.get("dst_port"),
+        "dst_port":     raw.get("dest_port"),    # T-Pot uses dest_port
         "event_type":   event_type,
         "username":     raw.get("username"),
         "password":     raw.get("password"),
-        "command":      raw.get("input"),          # cowrie field name
+        "command":      raw.get("input"),
         "uri":          None,
         "method":       None,
         "user_agent":   None,
         "exploit":      None,
-        "payload_hash": raw.get("shasum"),         # file download SHA
+        "payload_hash": raw.get("shasum"),
+        "geo":          _extract_geo(raw),
         "raw":          raw,
     }
 
 
 def _parse_dionaea(raw: dict) -> dict | None:
-    """Parse a single Dionaea JSON event into the unified schema."""
+    """Parse a real T-Pot Dionaea event into the unified schema."""
+    connection = raw.get("connection") or {}
+    protocol = connection.get("protocol", "")
+    conn_type = connection.get("type", "connection")
+
+    DIONAEA_PROTO_MAP = {
+        "smbd":   "smb_connection",
+        "httpd":  "http_connection",
+        "ftpd":   "ftp_connection",
+        "mysqld": "mysql_connection",
+        "mssqld": "mssql_connection",
+        "sipd":   "sip_connection",
+    }
+    event_type = DIONAEA_PROTO_MAP.get(protocol, conn_type or "connection")
+
     return {
-        "timestamp":    raw.get("timestamp"),
+        "timestamp":    raw.get("timestamp") or raw.get("@timestamp"),
         "service":      "dionaea",
         "src_ip":       raw.get("src_ip"),
         "src_port":     raw.get("src_port"),
-        "dst_port":     raw.get("dst_port"),
-        "event_type":   raw.get("event_type", "connection"),
+        "dst_port":     raw.get("dest_port"),    # T-Pot uses dest_port
+        "event_type":   event_type,
         "username":     raw.get("username"),
         "password":     raw.get("password"),
         "command":      None,
@@ -88,28 +173,36 @@ def _parse_dionaea(raw: dict) -> dict | None:
         "method":       None,
         "user_agent":   None,
         "exploit":      raw.get("exploit"),
-        "payload_hash": raw.get("payload_sha512"),
+        "payload_hash": raw.get("md5_hash") or raw.get("sha512_hash"),
+        "geo":          _extract_geo(raw),
         "raw":          raw,
     }
 
 
 def _parse_honeytrap(raw: dict) -> dict | None:
-    """Parse a single Honeytrap HTTP JSON event into the unified schema."""
+    """Parse a real T-Pot Honeytrap event into the unified schema."""
+    method, uri, user_agent = _decode_honeytrap_payload(raw)
+
+    attack = raw.get("attack_connection") or {}
+    payload = attack.get("payload") or {}
+    payload_hash = payload.get("sha512_hash") or payload.get("md5_hash")
+
     return {
-        "timestamp":    raw.get("timestamp"),
+        "timestamp":    raw.get("start_time") or raw.get("@timestamp"),
         "service":      "honeytrap",
         "src_ip":       raw.get("src_ip"),
         "src_port":     raw.get("src_port"),
-        "dst_port":     raw.get("dst_port"),
+        "dst_port":     raw.get("dest_port"),    # T-Pot uses dest_port
         "event_type":   "http_request",
         "username":     None,
         "password":     None,
         "command":      None,
-        "uri":          raw.get("uri"),
-        "method":       raw.get("method"),
-        "user_agent":   raw.get("user_agent"),
+        "uri":          uri,
+        "method":       method,
+        "user_agent":   user_agent,
         "exploit":      None,
-        "payload_hash": None,
+        "payload_hash": payload_hash,
+        "geo":          _extract_geo(raw),
         "raw":          raw,
     }
 
@@ -157,8 +250,8 @@ def load_log_file(path: Path, service: str) -> Generator[dict, None, None]:
 
 def load_all(data_dir: Path) -> list[dict]:
     """
-    Convenience function: scan a directory for cowrie.json, dionaea.json,
-    and honeytrap.json, parse whichever exist, and return a combined sorted list.
+    Scan a directory for cowrie.json, dionaea.json, and honeytrap.json,
+    parse whichever exist, and return a combined list sorted by timestamp.
 
     Args:
         data_dir: Directory containing the exported log files.

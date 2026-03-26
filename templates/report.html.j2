@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Honeypot Threat Intelligence Report</title>
+  <style>
+    :root {
+      --bg: #0d1117; --surface: #161b22; --border: #30363d;
+      --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
+      --green: #3fb950; --red: #f85149; --yellow: #d29922;
+      --orange: #db6d28;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; line-height: 1.6; }
+    .container { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
+    header { border-bottom: 1px solid var(--border); padding-bottom: 24px; margin-bottom: 32px; }
+    header h1 { font-size: 24px; font-weight: 600; color: var(--accent); }
+    header p  { color: var(--muted); margin-top: 4px; }
+    .meta { display: flex; gap: 24px; margin-top: 12px; font-size: 12px; color: var(--muted); }
+    .meta span { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 3px 10px; }
+
+    .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 40px; }
+    .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; }
+    .stat-card .value { font-size: 32px; font-weight: 700; color: var(--accent); }
+    .stat-card .label { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+    section { margin-bottom: 40px; }
+    section h2 { font-size: 16px; font-weight: 600; color: var(--text); border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 16px; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; padding: 8px 12px; background: var(--surface); color: var(--muted); font-weight: 500; border-bottom: 2px solid var(--border); }
+    td { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+    tr:hover td { background: var(--surface); }
+
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+    .badge-red    { background: rgba(248,81,73,0.15); color: var(--red); }
+    .badge-green  { background: rgba(63,185,80,0.15); color: var(--green); }
+    .badge-blue   { background: rgba(88,166,255,0.15); color: var(--accent); }
+    .badge-yellow { background: rgba(210,153,34,0.15); color: var(--yellow); }
+    .badge-orange { background: rgba(219,109,40,0.15); color: var(--orange); }
+
+    .bar-wrap { display: flex; align-items: center; gap: 10px; }
+    .bar { height: 6px; background: var(--accent); border-radius: 3px; min-width: 4px; }
+
+    .cmd-block { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px; margin-bottom: 12px; }
+    .cmd-block .cmd-header { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+    .cmd-block code { display: block; font-family: 'Courier New', monospace; font-size: 12px; color: var(--green); padding: 2px 0; }
+
+    .hash { font-family: 'Courier New', monospace; font-size: 11px; color: var(--yellow); word-break: break-all; }
+
+    .timeline-chart { display: flex; align-items: flex-end; gap: 4px; height: 80px; padding: 8px 0; }
+    .timeline-bar-wrap { display: flex; flex-direction: column; align-items: center; flex: 1; height: 100%; justify-content: flex-end; }
+    .timeline-bar { background: var(--accent); border-radius: 2px 2px 0 0; width: 100%; min-height: 2px; transition: background 0.2s; }
+    .timeline-bar:hover { background: var(--green); }
+    .timeline-label { font-size: 9px; color: var(--muted); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: clip; max-width: 32px; text-align: center; }
+
+    footer { border-top: 1px solid var(--border); padding-top: 20px; color: var(--muted); font-size: 12px; text-align: center; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <h1>🛡️ Honeypot Threat Intelligence Report</h1>
+    <p>Automated analysis of live honeypot telemetry — T-Pot pipeline</p>
+    <div class="meta">
+      <span>Generated: {{ generated_at }}</span>
+      <span>Services: Cowrie · Dionaea · Honeytrap</span>
+      <span>Enrichment: ip-api.com (geo + ASN)</span>
+    </div>
+  </header>
+
+  <!-- Summary Stats -->
+  <div class="stat-grid">
+    <div class="stat-card">
+      <div class="value">{{ findings.summary.total_events | format_num }}</div>
+      <div class="label">Total Events</div>
+    </div>
+    <div class="stat-card">
+      <div class="value">{{ findings.summary.unique_ips }}</div>
+      <div class="label">Unique Attacker IPs</div>
+    </div>
+    <div class="stat-card">
+      <div class="value">{{ findings.malware_samples | length }}</div>
+      <div class="label">Malware Samples Captured</div>
+    </div>
+    <div class="stat-card">
+      <div class="value">{{ findings.session_commands | length }}</div>
+      <div class="label">Post-Login Sessions</div>
+    </div>
+    <div class="stat-card">
+      <div class="value">{{ findings.repeat_offenders | length }}</div>
+      <div class="label">Persistent Attackers</div>
+    </div>
+    <div class="stat-card">
+      <div class="value">{{ findings.credential_clusters | length }}</div>
+      <div class="label">Botnet Clusters Detected</div>
+    </div>
+  </div>
+
+  <!-- Event Timeline -->
+  {% if findings.attacker_timeline %}
+  <section>
+    <h2>📈 Attack Timeline</h2>
+    {% set max_count = findings.attacker_timeline | map(attribute='count') | max %}
+    <div class="timeline-chart">
+      {% for bucket in findings.attacker_timeline %}
+      <div class="timeline-bar-wrap" title="{{ bucket.hour }}: {{ bucket.count }} events">
+        <div class="timeline-bar" style="height: {{ [((bucket.count / max_count) * 100) | int, 2] | max }}%;"></div>
+        <div class="timeline-label">{{ bucket.hour[11:13] }}h</div>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  <!-- Top Source IPs -->
+  {% if findings.top_ips %}
+  <section>
+    <h2>🎯 Most Active Source IPs</h2>
+    {% set max_evt = findings.top_ips[0].event_count %}
+    <table>
+      <thead><tr><th>IP</th><th>Location</th><th>ASN</th><th>Events</th><th>Activity</th></tr></thead>
+      <tbody>
+      {% for row in findings.top_ips %}
+      <tr>
+        <td><code>{{ row.ip }}</code></td>
+        <td>{{ row.city or '—' }}, {{ row.country or 'Unknown' }}</td>
+        <td><span class="badge badge-blue">{{ row.asn or 'Unknown' }}</span></td>
+        <td>{{ row.event_count }}</td>
+        <td>
+          <div class="bar-wrap">
+            <div class="bar" style="width: {{ ((row.event_count / max_evt) * 120) | int }}px;"></div>
+            <span style="color: var(--muted); font-size: 11px;">{{ row.event_types | dictsort | first | first if row.event_types else '' }}</span>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+  <!-- Top Countries -->
+  {% if findings.top_countries %}
+  <section>
+    <h2>🌍 Top Attack Source Countries</h2>
+    {% set max_c = findings.top_countries[0].event_count %}
+    <table>
+      <thead><tr><th>Country</th><th>Events</th><th>Distribution</th></tr></thead>
+      <tbody>
+      {% for row in findings.top_countries %}
+      <tr>
+        <td>{{ row.country }}</td>
+        <td>{{ row.event_count }}</td>
+        <td>
+          <div class="bar-wrap">
+            <div class="bar" style="width: {{ ((row.event_count / max_c) * 200) | int }}px;"></div>
+            <span style="color: var(--muted); font-size: 11px;">{{ ((row.event_count / findings.summary.total_events) * 100) | round(1) }}%</span>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+  <!-- Top Ports -->
+  {% if findings.top_ports %}
+  <section>
+    <h2>🔌 Most Targeted Ports</h2>
+    <table>
+      <thead><tr><th>Port</th><th>Service</th><th>Events</th></tr></thead>
+      <tbody>
+      {% for row in findings.top_ports %}
+      <tr>
+        <td><strong>{{ row.port }}</strong></td>
+        <td><span class="badge badge-orange">{{ row.service }}</span></td>
+        <td>{{ row.event_count }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+  <!-- Top Credentials -->
+  {% if findings.top_credentials %}
+  <section>
+    <h2>🔑 Most Attempted Credentials (SSH Brute Force)</h2>
+    <table>
+      <thead><tr><th>#</th><th>Username</th><th>Password</th><th>Attempts</th></tr></thead>
+      <tbody>
+      {% for row in findings.top_credentials %}
+      <tr>
+        <td style="color: var(--muted);">{{ loop.index }}</td>
+        <td><code>{{ row.username }}</code></td>
+        <td><code>{{ row.password }}</code></td>
+        <td><span class="badge badge-red">{{ row.count }}x</span></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+  <!-- Botnet Clusters -->
+  {% if findings.credential_clusters %}
+  <section>
+    <h2>🤖 Botnet Credential Clusters</h2>
+    <p style="color: var(--muted); margin-bottom: 16px; font-size: 12px;">
+      IPs sharing an identical credential list likely belong to the same automated campaign.
+    </p>
+    {% for cluster in findings.credential_clusters %}
+    <div class="cmd-block">
+      <div class="cmd-header">
+        <span class="badge badge-red">{{ cluster.ip_count }} IPs</span>
+        &nbsp;{{ cluster.cred_count }} shared credential pair(s)
+      </div>
+      <div style="margin-bottom: 8px;">
+        {% for ip in cluster.ips %}
+          <span class="badge badge-blue" style="margin-right: 4px;">{{ ip }}</span>
+        {% endfor %}
+      </div>
+      {% for cred in cluster.credentials %}
+        <code>{{ cred.username }} / {{ cred.password }}</code>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  <!-- Repeat Offenders -->
+  {% if findings.repeat_offenders %}
+  <section>
+    <h2>🔁 Persistent Attackers (Multi-Day Activity)</h2>
+
+    {% set max_days = findings.repeat_offenders[0].day_count %}
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px; flex-wrap:wrap;">
+      <span style="color:var(--muted); font-size:12px;">Show attackers active for exactly:</span>
+      <div id="day-filter" style="display:flex; gap:6px; flex-wrap:wrap;">
+        {% for d in range(max_days, 0, -1) %}
+        <button
+          class="day-btn"
+          data-days="{{ d }}"
+          onclick="filterDays({{ d }})"
+          style="padding:3px 12px; border-radius:12px; border:1px solid var(--border); background:var(--surface); color:var(--muted); cursor:pointer; font-size:12px;"
+        >{{ d }} day{{ 's' if d != 1 else '' }}</button>
+        {% endfor %}
+      </div>
+    </div>
+
+    <table>
+      <thead><tr><th>IP</th><th>Country</th><th>ASN</th><th>Active Days</th><th>Total Events</th></tr></thead>
+      <tbody id="offender-rows">
+      {% for row in findings.repeat_offenders %}
+      <tr data-days="{{ row.day_count }}">
+        <td><code>{{ row.ip }}</code></td>
+        <td>{{ row.country or 'Unknown' }}</td>
+        <td>{{ row.asn or '—' }}</td>
+        <td><span class="badge badge-yellow">{{ row.day_count }} days</span></td>
+        <td>{{ row.total_events }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <script>
+    function filterDays(exact) {
+      document.querySelectorAll('.day-btn').forEach(btn => {
+        const active = parseInt(btn.dataset.days) === exact;
+        btn.style.background  = active ? 'var(--accent)' : 'var(--surface)';
+        btn.style.color       = active ? '#fff' : 'var(--muted)';
+        btn.style.borderColor = active ? 'var(--accent)' : 'var(--border)';
+      });
+      document.querySelectorAll('#offender-rows tr').forEach(row => {
+        row.style.display = parseInt(row.dataset.days) === exact ? '' : 'none';
+      });
+    }
+    // Default to highest day count on load
+    (function() {
+      const btns = document.querySelectorAll('.day-btn');
+      if (btns.length) filterDays(parseInt(btns[0].dataset.days));
+    })();
+  </script>
+  {% endif %}
+
+  <!-- Post-Login Sessions -->
+  {% if findings.session_commands %}
+  <section>
+    <h2>💻 Post-Login Command Sessions</h2>
+    <p style="color: var(--muted); margin-bottom: 16px; font-size: 12px;">
+      Commands executed by attackers after a successful SSH login. Reveals attacker TTPs and objectives.
+    </p>
+    {% for sess in findings.session_commands %}
+    <div class="cmd-block">
+      <div class="cmd-header">
+        <code>{{ sess.src_ip }}</code> — {{ sess.country or 'Unknown' }}
+        &nbsp;·&nbsp; {{ sess.timestamp }}
+        &nbsp;·&nbsp; <span class="badge badge-yellow">{{ sess.cmd_count }} command(s)</span>
+      </div>
+      {% for cmd in sess.commands %}
+        <code>$ {{ cmd }}</code>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  <!-- Web Recon Paths -->
+  {% if findings.web_recon_paths %}
+  <section>
+    <h2>🌐 Top HTTP Probe Paths</h2>
+    <table>
+      <thead><tr><th>URI</th><th>Probes</th></tr></thead>
+      <tbody>
+      {% for row in findings.web_recon_paths %}
+      <tr>
+        <td><code>{{ row.uri }}</code></td>
+        <td>{{ row.count }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+  <!-- Malware Samples -->
+  {% if findings.malware_samples %}
+  <section>
+    <h2>🦠 Malware Samples Captured (Dionaea)</h2>
+    <p style="color:var(--muted); margin-bottom:16px; font-size:12px;">
+      <strong style="color:var(--yellow);">{{ findings.malware_total | format_num }}</strong> unique payload hashes captured across the full collection window.
+      Showing the first <strong style="color:var(--text);">{{ findings.malware_samples | length }}</strong>.
+    </p>
+    <table>
+      <thead><tr><th>Payload Hash (SHA-512)</th><th>Source IP</th><th>Exploit</th><th>Port</th><th>Timestamp</th></tr></thead>
+      <tbody>
+      {% for row in findings.malware_samples %}
+      <tr>
+        <td><span class="hash">{{ row.hash[:32] }}…</span></td>
+        <td><code>{{ row.src_ip }}</code></td>
+        <td><span class="badge badge-red">{{ row.exploit or 'Unknown' }}</span></td>
+        <td>{{ row.dst_port }}</td>
+        <td style="color: var(--muted);">{{ row.timestamp }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+  <footer>
+    <p>Generated by honeypot-threat-intel pipeline · Data collected via T-Pot · Enrichment via ip-api.com</p>
+  </footer>
+
+</div>
+</body>
+</html>

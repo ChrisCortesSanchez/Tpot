@@ -227,8 +227,10 @@ def credential_clusters(events: list[dict]) -> list[dict]:
     return sorted(rows, key=lambda x: -x["ip_count"])
 
 
-def malware_samples(events: list[dict]) -> list[dict]:
-    """Unique payload hashes collected by Dionaea."""
+def malware_samples(events: list[dict], n: int = 50) -> tuple[list[dict], int]:
+    """Unique payload hashes collected by Dionaea — capped at n for display.
+    Returns (capped list, total unique count).
+    """
     seen: dict[str, dict] = {}
     for e in events:
         h = e.get("payload_hash")
@@ -240,7 +242,7 @@ def malware_samples(events: list[dict]) -> list[dict]:
                 "exploit":   e.get("exploit"),
                 "dst_port":  e.get("dst_port"),
             }
-    return list(seen.values())
+    return list(seen.values())[:n], len(seen)
 
 
 def web_recon_paths(events: list[dict], n: int = 15) -> list[dict]:
@@ -274,7 +276,7 @@ def attacker_timeline(events: list[dict]) -> list[dict]:
     ]
 
 
-def session_commands(events: list[dict]) -> list[dict]:
+def session_commands(events: list[dict], n: int = 50) -> list[dict]:
     """
     For Cowrie sessions that included a successful login, return the
     full sequence of commands the attacker ran. This is the highest
@@ -316,24 +318,26 @@ def session_commands(events: list[dict]) -> list[dict]:
                 "cmd_count": len(data["commands"]),
             })
 
-    return sorted(rows, key=lambda x: -x["cmd_count"])
+    return sorted(rows, key=lambda x: -x["cmd_count"])[:n]
 
 
 # ── Master run ────────────────────────────────────────────────────────────────
 
 def run_all(events: list[dict]) -> dict:
     """Run every analysis pass and return a single findings dict."""
+    malware, malware_total = malware_samples(events)
     return {
-        "summary":            summary(events),
-        "top_ips":            top_ips(events),
-        "top_countries":      top_countries(events),
-        "top_asns":           top_asns(events),
-        "top_ports":          top_ports(events),
-        "top_credentials":    top_credentials(events),
-        "repeat_offenders":   repeat_offenders(events),
+        "summary":             summary(events),
+        "top_ips":             top_ips(events),
+        "top_countries":       top_countries(events),
+        "top_asns":            top_asns(events),
+        "top_ports":           top_ports(events),
+        "top_credentials":     top_credentials(events),
+        "repeat_offenders":    repeat_offenders(events),
         "credential_clusters": credential_clusters(events),
-        "malware_samples":    malware_samples(events),
-        "web_recon_paths":    web_recon_paths(events),
-        "attacker_timeline":  attacker_timeline(events),
-        "session_commands":   session_commands(events),
+        "malware_samples":     malware,
+        "malware_total":       malware_total,
+        "web_recon_paths":     web_recon_paths(events),
+        "attacker_timeline":   attacker_timeline(events),
+        "session_commands":    session_commands(events),
     }
