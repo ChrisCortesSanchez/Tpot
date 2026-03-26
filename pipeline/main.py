@@ -82,12 +82,6 @@ def run(data_dir: Path, output_dir: Path, output_format: str, skip_enrichment: b
     # ── 2. Enrich ──────────────────────────────────────────────────────────────
     if skip_enrichment:
         click.echo("\n[2/4] ⏭️  Skipping enrichment (--skip-enrichment flag set)")
-        for event in events:
-            event["geo"] = {
-                "country": None, "country_code": None, "region": None,
-                "city": None, "isp": None, "org": None, "asn": None,
-                "lat": None, "lon": None, "enriched": False,
-            }
     else:
         unique_ips = len({e["src_ip"] for e in events if e.get("src_ip")})
         click.echo(f"\n[2/4] 🌐 Enriching {unique_ips} unique IPs via ip-api.com...")
