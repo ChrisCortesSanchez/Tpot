@@ -151,12 +151,19 @@ def top_ports(events: list[dict], n: int = 10) -> list[dict]:
 
 def top_credentials(events: list[dict], n: int = 15) -> list[dict]:
     """
-    Most attempted username/password pairs from Cowrie.
-    Useful for identifying botnet credential dictionaries.
+    Most attempted username/password pairs from Cowrie login events only.
+    Filtering to login_failed and login_success prevents unmapped Cowrie
+    event types with incidental username/password fields from bleeding in.
     """
+    VALID_TYPES = {"login_failed", "login_success"}
     counter: Counter = Counter()
     for e in events:
-        if e.get("service") == "cowrie" and e.get("username") and e.get("password"):
+        if (
+            e.get("service") == "cowrie"
+            and e.get("event_type") in VALID_TYPES
+            and e.get("username")
+            and e.get("password")
+        ):
             key = (e["username"], e["password"])
             counter[key] += 1
 
